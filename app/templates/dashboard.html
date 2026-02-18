@@ -1,0 +1,202 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - AGNCF{% endblock %}
+
+{% block header_title %}Backup Dashboard{% endblock %}
+
+{% block content %}
+
+<section class="section">
+    <h2>Quick Actions</h2>
+    <div class="btn-group">
+        <button class="btn btn-primary" onclick="openBackupModal()">Start Backup</button>
+        <button class="btn btn-secondary" onclick="location.reload()">Refresh</button>
+    </div>
+</section>
+
+<section class="section">
+    <h2>Backup Jobs</h2>
+    <table class="table" id="jobs-table">
+        <thead>
+            <tr>
+                <th>Job ID</th>
+                <th>Triggered At</th>
+                <th>Triggered By</th>
+                <th>Status</th>
+                <th>Progress</th>
+                <th>Failed</th>
+                <th>Duration</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody id="jobs-tbody">
+            <tr><td colspan="8" style="text-align: center;">Loading...</td></tr>
+        </tbody>
+    </table>
+</section>
+
+<!-- Backup Modal -->
+<div id="backup-modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000;">
+    <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; padding: 2rem; border-radius: 8px; width: 90%; max-width: 500px;">
+        <h3>Start Backup Job</h3>
+        <div class="form-group">
+            <label>Triggered By (Name/User):</label>
+            <input type="text" id="triggered-by" placeholder="e.g., admin" required>
+        </div>
+        <div class="form-group">
+            <label>Scope:</label>
+            <select id="backup-scope" onchange="updateBackupScope()">
+                <option value="all">All Sites</option>
+                <option value="site">Specific Site</option>
+            </select>
+        </div>
+        <div class="form-group" id="site-select-group" style="display: none;">
+            <label>Site:</label>
+            <select id="backup-site"></select>
+        </div>
+        <div class="btn-group">
+            <button class="btn btn-primary" onclick="startBackup()">Start</button>
+            <button class="btn btn-secondary" onclick="closeModal('backup-modal')">Cancel</button>
+        </div>
+    </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+
+let ws = null;
+let jobWebSockets = {};
+
+async function loadJobs() {
+    try {
+        const response = await fetch('/api/backups/jobs');
+        const jobs = await response.json();
+        renderJobs(jobs);
+
+        // Load sites for modal
+        const sitesResponse = await fetch('/api/sites');
+        const sites = await sitesResponse.json();
+        populateBackupSiteSelect(sites);
+    } catch (e) {
+        console.error('Failed to load jobs:', e);
+    }
+}
+
+function renderJobs(jobs) {
+    const tbody = document.getElementById('jobs-tbody');
+    if (jobs.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="8" style="text-align: center;">No jobs found</td></tr>';
+        return;
+    }
+
+    tbody.innerHTML = jobs.map(job => {
+        const progress = job.total_devices > 0 ? (job.completed_devices / job.total_devices * 100).toFixed(0) : 0;
+        const duration = job.started_at && job.completed_at
+            ? new Date(job.completed_at) - new Date(job.started_at)
+            : null;
+        const durationStr = duration ? formatDuration(duration) : '—';
+
+        const statusBadge = `<span class="badge badge-${job.status}">${job.status}</span>`;
+
+        return `
+            <tr>
+                <td><strong>#${job.id}</strong></td>
+                <td>${formatDate(job.triggered_at)}</td>
+                <td>${job.triggered_by}</td>
+                <td>${statusBadge}</td>
+                <td>${job.completed_devices}/${job.total_devices} (${progress}%)</td>
+                <td>${job.failed_devices}</td>
+                <td>${durationStr}</td>
+                <td>
+                    <button class="btn btn-sm btn-secondary" onclick="viewJobDetails(${job.id})">View</button>
+                </td>
+            </tr>
+        `;
+    }).join('');
+}
+
+function formatDate(dateStr) {
+    const date = new Date(dateStr);
+    return date.toLocaleString();
+}
+
+function formatDuration(ms) {
+    const seconds = Math.floor(ms / 1000);
+    const minutes = Math.floor(seconds / 60);
+    const hours = Math.floor(minutes / 60);
+
+    if (hours > 0) return `${hours}h ${minutes % 60}m`;
+    if (minutes > 0) return `${minutes}m ${seconds % 60}s`;
+    return `${seconds}s`;
+}
+
+function openBackupModal() {
+    document.getElementById('backup-modal').style.display = 'block';
+}
+
+function closeModal(modalId) {
+    document.getElementById(modalId).style.display = 'none';
+}
+
+function updateBackupScope() {
+    const scope = document.getElementById('backup-scope').value;
+    const siteSelectGroup = document.getElementById('site-select-group');
+    siteSelectGroup.style.display = scope === 'site' ? 'block' : 'none';
+}
+
+function populateBackupSiteSelect(sites) {
+    const select = document.getElementById('backup-site');
+    select.innerHTML = '';
+    sites.forEach(site => {
+        const option = document.createElement('option');
+        option.value = site.id;
+        option.textContent = site.name;
+        select.appendChild(option);
+    });
+}
+
+async function startBackup() {
+    const triggeredBy = document.getElementById('triggered-by').value;
+    const scope = document.getElementById('backup-scope').value;
+    const siteId = scope === 'site' ? parseInt(document.getElementById('backup-site').value) : null;
+
+    if (!triggeredBy) {
+        alert('Please enter who is triggering this backup');
+        return;
+    }
+
+    try {
+        const payload = { triggered_by: triggeredBy };
+        if (siteId) payload.site_id = siteId;
+
+        const response = await fetch('/api/backups/jobs', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+
+        if (response.ok) {
+            const job = await response.json();
+            closeModal('backup-modal');
+            viewJobDetails(job.id);
+            loadJobs();
+        } else {
+            alert('Error starting backup');
+        }
+    } catch (e) {
+        console.error('Error:', e);
+        alert('Error starting backup');
+    }
+}
+
+function viewJobDetails(jobId) {
+    window.location.href = `/job/${jobId}`;
+}
+
+document.addEventListener('DOMContentLoaded', loadJobs);
+
+// Auto-refresh every 10 seconds
+setInterval(loadJobs, 10000);
+
+{% endblock %}

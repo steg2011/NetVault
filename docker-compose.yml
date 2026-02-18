@@ -1,0 +1,75 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: agncf-db
+    environment:
+      POSTGRES_DB: ${DB_NAME:-agncf}
+      POSTGRES_USER: ${DB_USER:-agncf_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-agncf_user}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - agncf_net
+
+  gitea:
+    image: gitea/gitea:latest
+    container_name: agncf-gitea
+    environment:
+      ROOT_URL: http://gitea:3000
+      DB_TYPE: postgres
+      DB_HOST: db:5432
+      DB_NAME: ${DB_NAME:-agncf}
+      DB_USER: ${DB_USER:-agncf_user}
+      DB_PASSWD: ${DB_PASSWORD:-changeme}
+      GITEA__SECURITY__SECRET_KEY: ${GITEA_SECRET_KEY:-your-secret-key-change-me}
+    volumes:
+      - gitea_data:/data
+    ports:
+      - "3000:3000"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - agncf_net
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: agncf-app
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${DB_USER:-agncf_user}:${DB_PASSWORD:-changeme}@db:5432/${DB_NAME:-agncf}
+      GITEA_URL: http://gitea:3000
+      GITEA_TOKEN: ${GITEA_TOKEN:-your-token-here}
+      GITEA_ORG: ${GITEA_ORG:-agncf}
+      FERNET_KEY: ${FERNET_KEY:-}
+      NET_USER_GLOBAL: ${NET_USER_GLOBAL:-}
+      NET_PASS_GLOBAL: ${NET_PASS_GLOBAL:-}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - ./backups:/app/backups
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - agncf_net
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+volumes:
+  db_data:
+  gitea_data:
+
+networks:
+  agncf_net:
+    driver: bridge

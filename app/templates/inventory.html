@@ -1,0 +1,412 @@
+{% extends "base.html" %}
+
+{% block title %}Inventory - AGNCF{% endblock %}
+
+{% block header_title %}Inventory Management{% endblock %}
+
+{% block content %}
+
+<section class="section">
+    <h2>Sites</h2>
+    <div class="btn-group">
+        <button class="btn btn-primary btn-sm" onclick="openAddSiteModal()">+ Add Site</button>
+    </div>
+    <table class="table" id="sites-table">
+        <thead>
+            <tr>
+                <th>Code</th>
+                <th>Name</th>
+                <th>Repository</th>
+                <th>Devices</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody id="sites-tbody">
+            <tr><td colspan="5" style="text-align: center;">Loading...</td></tr>
+        </tbody>
+    </table>
+</section>
+
+<section class="section">
+    <h2>Devices</h2>
+    <div class="btn-group">
+        <button class="btn btn-primary btn-sm" onclick="openAddDeviceModal()">+ Add Device</button>
+        <select id="site-filter" onchange="filterDevicesBySite()" style="padding: 0.5rem;">
+            <option value="">All Sites</option>
+        </select>
+    </div>
+    <table class="table" id="devices-table">
+        <thead>
+            <tr>
+                <th>Hostname</th>
+                <th>IP Address</th>
+                <th>Platform</th>
+                <th>Site</th>
+                <th>Status</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody id="devices-tbody">
+            <tr><td colspan="6" style="text-align: center;">Loading...</td></tr>
+        </tbody>
+    </table>
+</section>
+
+<section class="section">
+    <h2>Credentials</h2>
+    <div class="btn-group">
+        <button class="btn btn-primary btn-sm" onclick="openAddCredentialModal()">+ Add Credential Set</button>
+    </div>
+    <table class="table" id="credentials-table">
+        <thead>
+            <tr>
+                <th>Label</th>
+                <th>Username</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody id="credentials-tbody">
+            <tr><td colspan="3" style="text-align: center;">Loading...</td></tr>
+        </tbody>
+    </table>
+</section>
+
+<!-- Modals -->
+
+<div id="add-site-modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000;">
+    <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; padding: 2rem; border-radius: 8px; width: 90%; max-width: 500px;">
+        <h3>Add Site</h3>
+        <div class="form-group">
+            <label>Code:</label>
+            <input type="text" id="site-code" required>
+        </div>
+        <div class="form-group">
+            <label>Name:</label>
+            <input type="text" id="site-name" required>
+        </div>
+        <div class="form-group">
+            <label>Gitea Repository:</label>
+            <input type="text" id="site-repo" required>
+        </div>
+        <div class="btn-group">
+            <button class="btn btn-primary" onclick="createSite()">Create</button>
+            <button class="btn btn-secondary" onclick="closeModal('add-site-modal')">Cancel</button>
+        </div>
+    </div>
+</div>
+
+<div id="add-device-modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000;">
+    <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; padding: 2rem; border-radius: 8px; width: 90%; max-width: 500px; max-height: 80vh; overflow-y: auto;">
+        <h3>Add Device</h3>
+        <div class="form-group">
+            <label>Hostname:</label>
+            <input type="text" id="device-hostname" required>
+        </div>
+        <div class="form-group">
+            <label>IP Address:</label>
+            <input type="text" id="device-ip" required>
+        </div>
+        <div class="form-group">
+            <label>Platform:</label>
+            <select id="device-platform" required>
+                <option value="">-- Select --</option>
+                <option value="ios">Cisco IOS</option>
+                <option value="nxos">Cisco NX-OS</option>
+                <option value="eos">Arista EOS</option>
+                <option value="dellos10">Dell OS10</option>
+                <option value="panos">Palo Alto Networks</option>
+                <option value="fortios">Fortinet FortiOS</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label>Site:</label>
+            <select id="device-site" required></select>
+        </div>
+        <div class="form-group">
+            <label>Credential Set (Optional):</label>
+            <select id="device-credential"></select>
+        </div>
+        <div class="btn-group">
+            <button class="btn btn-primary" onclick="createDevice()">Create</button>
+            <button class="btn btn-secondary" onclick="closeModal('add-device-modal')">Cancel</button>
+        </div>
+    </div>
+</div>
+
+<div id="add-credential-modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000;">
+    <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; padding: 2rem; border-radius: 8px; width: 90%; max-width: 500px;">
+        <h3>Add Credential Set</h3>
+        <div class="form-group">
+            <label>Label:</label>
+            <input type="text" id="credential-label" required>
+        </div>
+        <div class="form-group">
+            <label>Username:</label>
+            <input type="text" id="credential-username" required>
+        </div>
+        <div class="form-group">
+            <label>Password:</label>
+            <input type="password" id="credential-password" required>
+        </div>
+        <div class="btn-group">
+            <button class="btn btn-primary" onclick="createCredential()">Create</button>
+            <button class="btn btn-secondary" onclick="closeModal('add-credential-modal')">Cancel</button>
+        </div>
+    </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+
+async function loadInventory() {
+    try {
+        const [sitesResponse, devicesResponse, credsResponse] = await Promise.all([
+            fetch('/api/sites'),
+            fetch('/api/devices'),
+            fetch('/api/credentials')
+        ]);
+
+        const sites = await sitesResponse.json();
+        const devices = await devicesResponse.json();
+        const credentials = await credsResponse.json();
+
+        renderSites(sites);
+        renderDevices(devices);
+        renderCredentials(credentials);
+        populateSiteFilter(sites);
+        populateSiteSelect(sites);
+        populateCredentialSelect(credentials);
+    } catch (e) {
+        console.error('Failed to load inventory:', e);
+        document.getElementById('sites-tbody').innerHTML = `<tr><td colspan="5" style="text-align: center; color: red;">Error loading inventory</td></tr>`;
+    }
+}
+
+function renderSites(sites) {
+    const tbody = document.getElementById('sites-tbody');
+    if (sites.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align: center;">No sites yet</td></tr>';
+        return;
+    }
+
+    tbody.innerHTML = sites.map(site => `
+        <tr>
+            <td><strong>${site.code}</strong></td>
+            <td>${site.name}</td>
+            <td><code>${site.gitea_repo_name}</code></td>
+            <td><span class="badge badge-info">${site.id}</span></td>
+            <td>
+                <button class="btn btn-sm btn-secondary" onclick="deleteSite(${site.id})">Delete</button>
+            </td>
+        </tr>
+    `).join('');
+}
+
+function renderDevices(devices) {
+    const tbody = document.getElementById('devices-tbody');
+    if (devices.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" style="text-align: center;">No devices yet</td></tr>';
+        return;
+    }
+
+    tbody.innerHTML = devices.map(device => `
+        <tr>
+            <td><strong>${device.hostname}</strong></td>
+            <td><code>${device.ip}</code></td>
+            <td>${device.platform}</td>
+            <td>${device.site_id}</td>
+            <td>${device.enabled ? '<span class="badge badge-success">Enabled</span>' : '<span class="badge badge-error">Disabled</span>'}</td>
+            <td>
+                <button class="btn btn-sm btn-secondary" onclick="deleteDevice(${device.id})">Delete</button>
+            </td>
+        </tr>
+    `).join('');
+}
+
+function renderCredentials(credentials) {
+    const tbody = document.getElementById('credentials-tbody');
+    if (credentials.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="3" style="text-align: center;">No credentials yet</td></tr>';
+        return;
+    }
+
+    tbody.innerHTML = credentials.map(cred => `
+        <tr>
+            <td><strong>${cred.label}</strong></td>
+            <td>${cred.username}</td>
+            <td>
+                <button class="btn btn-sm btn-secondary" onclick="deleteCredential(${cred.id})">Delete</button>
+            </td>
+        </tr>
+    `).join('');
+}
+
+function populateSiteFilter(sites) {
+    const select = document.getElementById('site-filter');
+    sites.forEach(site => {
+        const option = document.createElement('option');
+        option.value = site.id;
+        option.textContent = site.name;
+        select.appendChild(option);
+    });
+}
+
+function populateSiteSelect(sites) {
+    const select = document.getElementById('device-site');
+    sites.forEach(site => {
+        const option = document.createElement('option');
+        option.value = site.id;
+        option.textContent = site.name;
+        select.appendChild(option);
+    });
+}
+
+function populateCredentialSelect(credentials) {
+    const select = document.getElementById('device-credential');
+    const option = document.createElement('option');
+    option.value = '';
+    option.textContent = '-- None --';
+    select.appendChild(option);
+
+    credentials.forEach(cred => {
+        const option = document.createElement('option');
+        option.value = cred.id;
+        option.textContent = cred.label;
+        select.appendChild(option);
+    });
+}
+
+function filterDevicesBySite() {
+    location.href = `?site_id=${document.getElementById('site-filter').value}`;
+}
+
+function openAddSiteModal() {
+    document.getElementById('add-site-modal').style.display = 'block';
+}
+
+function openAddDeviceModal() {
+    document.getElementById('add-device-modal').style.display = 'block';
+}
+
+function openAddCredentialModal() {
+    document.getElementById('add-credential-modal').style.display = 'block';
+}
+
+function closeModal(modalId) {
+    document.getElementById(modalId).style.display = 'none';
+}
+
+async function createSite() {
+    const code = document.getElementById('site-code').value;
+    const name = document.getElementById('site-name').value;
+    const gitea_repo_name = document.getElementById('site-repo').value;
+
+    try {
+        const response = await fetch('/api/sites', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ code, name, gitea_repo_name })
+        });
+
+        if (response.ok) {
+            closeModal('add-site-modal');
+            loadInventory();
+        } else {
+            alert('Error creating site');
+        }
+    } catch (e) {
+        console.error('Error:', e);
+        alert('Error creating site');
+    }
+}
+
+async function createDevice() {
+    const hostname = document.getElementById('device-hostname').value;
+    const ip = document.getElementById('device-ip').value;
+    const platform = document.getElementById('device-platform').value;
+    const site_id = parseInt(document.getElementById('device-site').value);
+    const credential_id = document.getElementById('device-credential').value ? parseInt(document.getElementById('device-credential').value) : null;
+
+    try {
+        const response = await fetch('/api/devices', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ hostname, ip, platform, site_id, credential_id })
+        });
+
+        if (response.ok) {
+            closeModal('add-device-modal');
+            loadInventory();
+        } else {
+            alert('Error creating device');
+        }
+    } catch (e) {
+        console.error('Error:', e);
+        alert('Error creating device');
+    }
+}
+
+async function createCredential() {
+    const label = document.getElementById('credential-label').value;
+    const username = document.getElementById('credential-username').value;
+    const password = document.getElementById('credential-password').value;
+
+    try {
+        const response = await fetch('/api/credentials', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ label, username, password })
+        });
+
+        if (response.ok) {
+            closeModal('add-credential-modal');
+            loadInventory();
+        } else {
+            alert('Error creating credential set');
+        }
+    } catch (e) {
+        console.error('Error:', e);
+        alert('Error creating credential set');
+    }
+}
+
+async function deleteSite(siteId) {
+    if (!confirm('Delete this site?')) return;
+
+    try {
+        await fetch(`/api/sites/${siteId}`, { method: 'DELETE' });
+        loadInventory();
+    } catch (e) {
+        console.error('Error:', e);
+        alert('Error deleting site');
+    }
+}
+
+async function deleteDevice(deviceId) {
+    if (!confirm('Delete this device?')) return;
+
+    try {
+        await fetch(`/api/devices/${deviceId}`, { method: 'DELETE' });
+        loadInventory();
+    } catch (e) {
+        console.error('Error:', e);
+        alert('Error deleting device');
+    }
+}
+
+async function deleteCredential(credId) {
+    if (!confirm('Delete this credential set?')) return;
+
+    try {
+        await fetch(`/api/credentials/${credId}`, { method: 'DELETE' });
+        loadInventory();
+    } catch (e) {
+        console.error('Error:', e);
+        alert('Error deleting credential');
+    }
+}
+
+document.addEventListener('DOMContentLoaded', loadInventory);
+
+{% endblock %}
