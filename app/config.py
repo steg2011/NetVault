@@ -1,6 +1,7 @@
 import logging
-from pydantic_settings import BaseSettings
+from functools import lru_cache
 from typing import Optional
+from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
@@ -8,24 +9,20 @@ class Settings(BaseSettings):
 
     # Database
     database_url: str
-    db_name: str = "agncf"
-    db_user: str = "agncf_user"
-    db_password: str = "changeme"
 
     # Gitea
     gitea_url: str
     gitea_token: str
     gitea_org: str = "agncf"
-    gitea_secret_key: str
 
-    # Encryption
+    # Credential encryption (Fernet key, 44-char URL-safe base64)
     fernet_key: str
 
-    # Global credentials (fallback)
+    # Global network credentials — optional fallback tier
     net_user_global: Optional[str] = None
     net_pass_global: Optional[str] = None
 
-    # Nornir
+    # Nornir / concurrency tuning
     nornir_num_workers: int = 50
     api_semaphore_limit: int = 30
 
@@ -33,21 +30,20 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     debug: bool = False
 
-    class Config:
-        env_file = ".env"
-        case_sensitive = False
-        extra = "ignore"
+    model_config = {"env_file": ".env", "case_sensitive": False, "extra": "ignore"}
 
 
+@lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    """Return singleton settings instance."""
+    """Return the singleton Settings instance (cached after first load)."""
     return Settings()
 
 
 def setup_logging(settings: Settings) -> None:
-    """Configure logging based on settings."""
+    """Configure root logger from settings."""
     log_level = getattr(logging, settings.log_level.upper(), logging.INFO)
     logging.basicConfig(
         level=log_level,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        format="%(asctime)s  %(name)-40s  %(levelname)-8s  %(message)s",
+        datefmt="%Y-%m-%dT%H:%M:%S",
     )

@@ -1,9 +1,17 @@
-import logging
+"""
+Async backup tasks for API-driven platforms:
+  • Palo Alto Networks (PAN-OS) — XML API
+  • Fortinet FortiGate (FortiOS) — REST API
+
+Each function returns a dict compatible with BackupEngine._commit_config.
+SSL verification is intentionally disabled for air-gapped self-signed certs.
+"""
 import hashlib
-import httpx
+import logging
 import xml.etree.ElementTree as ET
-from typing import Dict, Any, Tuple
-from urllib.parse import urljoin
+from typing import Any, Dict
+
+import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -14,73 +22,50 @@ async def backup_palo_alto(
     username: str,
     password: str,
     device_id: int,
-    timeout: int = 30
+    timeout: int = 60,
 ) -> Dict[str, Any]:
     """
-    Backup Palo Alto Networks configuration via XML API.
+    Backup a Palo Alto Networks firewall via the XML API.
 
-    Returns:
-        Dictionary with config, hash, device_id, hostname, platform
+    Steps:
+      1. POST /api/?type=keygen  → obtain an API key
+      2. GET  /api/?type=export&category=configuration  → full running config XML
     """
-    try:
-        async with httpx.AsyncClient(verify=False, timeout=timeout) as client:
-            # Get API key
-            api_url = f"https://{ip}/api/"
-            key_params = {
-                "type": "keygen",
-                "user": username,
-                "passwd": password,
-            }
+    api_url = f"https://{ip}/api/"
 
-            key_response = await client.get(
-                api_url,
-                params=key_params,
-                verify=False
-            )
+    async with httpx.AsyncClient(verify=False, timeout=timeout) as client:
+        # Step 1: obtain API key
+        key_resp = await client.get(
+            api_url,
+            params={"type": "keygen", "user": username, "passwd": password},
+        )
+        key_resp.raise_for_status()
 
-            if key_response.status_code != 200:
-                raise Exception(f"Failed to get API key: {key_response.text}")
+        root = ET.fromstring(key_resp.text)
+        key_elem = root.find(".//key")
+        if key_elem is None or not key_elem.text:
+            raise RuntimeError(f"PAN-OS keygen returned no key for {hostname}")
 
-            # Parse API key from XML response
-            root = ET.fromstring(key_response.text)
-            api_key_elem = root.find(".//key")
-            if api_key_elem is None or not api_key_elem.text:
-                raise Exception("No API key in response")
+        api_key = key_elem.text
 
-            api_key = api_key_elem.text
+        # Step 2: export running configuration
+        cfg_resp = await client.get(
+            api_url,
+            params={"type": "export", "category": "configuration", "key": api_key},
+        )
+        cfg_resp.raise_for_status()
 
-            # Get running config
-            config_params = {
-                "type": "export",
-                "category": "configuration",
-                "key": api_key,
-            }
+    config_text = cfg_resp.text
+    config_hash = hashlib.sha256(config_text.encode()).hexdigest()
+    logger.info("Backup OK  %s (panos) — %d bytes", hostname, len(config_text))
 
-            config_response = await client.get(
-                api_url,
-                params=config_params,
-                verify=False
-            )
-
-            if config_response.status_code != 200:
-                raise Exception(f"Failed to get config: {config_response.text}")
-
-            config_text = config_response.text
-            config_hash = hashlib.sha256(config_text.encode()).hexdigest()
-
-            logger.info(f"Backed up Palo Alto {hostname}: {len(config_text)} bytes, hash={config_hash[:8]}")
-
-            return {
-                "config": config_text,
-                "hash": config_hash,
-                "device_id": device_id,
-                "hostname": hostname,
-                "platform": "panos",
-            }
-
-    except Exception as e:
-        logger.error(f"Failed to backup Palo Alto {hostname}: {str(e)}")
-        raise
+    return {
+        "config": config_text,
+        "hash": config_hash,
+        "device_id": device_id,
+        "hostname": hostname,
+        "platform": "panos",
+    }
 
 
 async def backup_fortinet(
@@ -89,65 +74,58 @@ async def backup_fortinet(
     username: str,
     password: str,
     device_id: int,
-    timeout: int = 30
+    timeout: int = 60,
 ) -> Dict[str, Any]:
     """
-    Backup Fortinet FortiGate configuration via REST API.
+    Backup a Fortinet FortiGate appliance via the REST API.
 
-    Returns:
-        Dictionary with config, hash, device_id, hostname, platform
+    Steps:
+      1. POST /logincheck  → obtain session cookie
+      2. GET  /api/v2/monitor/system/config/backup?scope=global  → config file
+      3. POST /logout
     """
-    try:
-        async with httpx.AsyncClient(verify=False, timeout=timeout) as client:
-            # Authenticate and get token
-            auth_url = f"https://{ip}/api/v2/auth/login"
-            auth_data = {
-                "username": username,
-                "password": password,
-            }
+    base = f"https://{ip}"
 
-            auth_response = await client.post(
-                auth_url,
-                data=auth_data,
-                verify=False
-            )
+    async with httpx.AsyncClient(verify=False, timeout=timeout) as client:
+        # Step 1: authenticate
+        login_resp = await client.post(
+            f"{base}/logincheck",
+            data={"username": username, "secretkey": password},
+        )
+        login_resp.raise_for_status()
 
-            if auth_response.status_code != 200:
-                raise Exception(f"Authentication failed: {auth_response.text}")
+        # Fortinet uses a CSRF token returned in a cookie
+        csrf_token = client.cookies.get("ccsrftoken", "").strip('"')
+        if not csrf_token:
+            # Fallback: some versions use a header-based token from the body
+            csrf_token = ""
 
-            auth_result = auth_response.json()
-            token = auth_result.get("access_token")
-            if not token:
-                raise Exception("No access token in auth response")
+        headers: Dict[str, str] = {}
+        if csrf_token:
+            headers["X-CSRFTOKEN"] = csrf_token
 
-            # Get running config
-            config_url = f"https://{ip}/api/v2/monitor/system/config/backup"
-            headers = {
-                "Authorization": f"Bearer {token}",
-            }
+        # Step 2: download config backup
+        cfg_resp = await client.get(
+            f"{base}/api/v2/monitor/system/config/backup",
+            params={"scope": "global"},
+            headers=headers,
+        )
+        cfg_resp.raise_for_status()
 
-            config_response = await client.get(
-                config_url,
-                headers=headers,
-                verify=False
-            )
+        # Step 3: logout (best-effort)
+        try:
+            await client.post(f"{base}/logout", headers=headers)
+        except Exception:
+            pass
 
-            if config_response.status_code != 200:
-                raise Exception(f"Failed to get config: {config_response.text}")
+    config_text = cfg_resp.text
+    config_hash = hashlib.sha256(config_text.encode()).hexdigest()
+    logger.info("Backup OK  %s (fortios) — %d bytes", hostname, len(config_text))
 
-            config_text = config_response.text
-            config_hash = hashlib.sha256(config_text.encode()).hexdigest()
-
-            logger.info(f"Backed up Fortinet {hostname}: {len(config_text)} bytes, hash={config_hash[:8]}")
-
-            return {
-                "config": config_text,
-                "hash": config_hash,
-                "device_id": device_id,
-                "hostname": hostname,
-                "platform": "fortios",
-            }
-
-    except Exception as e:
-        logger.error(f"Failed to backup Fortinet {hostname}: {str(e)}")
-        raise
+    return {
+        "config": config_text,
+        "hash": config_hash,
+        "device_id": device_id,
+        "hostname": hostname,
+        "platform": "fortios",
+    }

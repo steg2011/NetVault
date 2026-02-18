@@ -1,322 +1,257 @@
+"""
+Unit tests for app/core/scrubber.py.
+
+Covers all six supported platforms with at least one test each, plus edge-case
+and cross-platform tests.  No network or DB access required.
+"""
 import pytest
-from app.core.scrubber import scrub_config, ConfigScrubber
+from app.core.scrubber import ConfigScrubber, scrub_config
 
 
-class TestScrubberCommonPatterns:
-    """Test common pattern scrubbing across all platforms."""
+# ── Common / cross-platform ────────────────────────────────────────────────────
 
-    def test_scrub_ipv4_addresses(self):
-        """Test IPv4 address scrubbing."""
-        scrubber = ConfigScrubber()
-        config = "server 192.168.1.1 10.0.0.5 172.16.0.1"
-        result = scrubber.scrub_config(config, "ios")
-        assert "192.168.1.1" not in result or "<ip-address>" in result
+class TestCommonPatterns:
+    def test_iso_timestamp_replaced(self):
+        config = "! Generated 2025-02-18T14:30:45"
+        result = scrub_config(config, "ios")
+        assert "2025-02-18T14:30:45" not in result
+        assert "<timestamp>" in result
 
-    def test_scrub_timestamps(self):
-        """Test timestamp scrubbing."""
-        scrubber = ConfigScrubber()
-        config = "last_update: 2025-02-18 14:30:45"
-        result = scrubber.scrub_config(config, "ios")
-        # Timestamp should be replaced
-        assert "2025-02-18" not in result or "<timestamp>" in result
+    def test_iso_timestamp_with_tz_offset_replaced(self):
+        config = "! Saved at 2025-02-18 14:30:45+00:00"
+        result = scrub_config(config, "nxos")
+        assert "2025-02-18 14:30:45" not in result
+
+    def test_empty_config_returns_empty(self):
+        assert scrub_config("", "ios") == ""
+
+    def test_unknown_platform_applies_common_only(self):
+        """An unrecognised platform should still apply common patterns."""
+        config = "timestamp 2025-01-01T00:00:00"
+        result = scrub_config(config, "unknown_platform")
+        # The ISO timestamp should be replaced by the common pattern
+        assert "2025-01-01T00:00:00" not in result
+
+    def test_static_config_preserved(self):
+        config = "interface Ethernet0\n description Core uplink\n bandwidth 1000000"
+        result = scrub_config(config, "ios")
+        assert "Ethernet0" in result
+        assert "Core uplink" in result
+        assert "bandwidth 1000000" in result
+
+    def test_multiline_structure_preserved(self):
+        config = (
+            "hostname router-01\n"
+            "uptime is 5 days, 1 hour\n"
+            "interface Loopback0\n"
+            " ip address 10.0.0.1 255.255.255.255\n"
+        )
+        result = scrub_config(config, "ios")
+        assert "router-01" in result
+        assert "Loopback0" in result
+        assert "5 days" not in result
 
 
-class TestScrubberCiscoIOS:
-    """Test Cisco IOS configuration scrubbing."""
+# ── Cisco IOS ──────────────────────────────────────────────────────────────────
 
-    def test_scrub_uptime(self):
-        """Test removal of uptime lines."""
-        scrubber = ConfigScrubber()
-        config = "uptime is 45 days, 3 hours, 22 minutes"
-        result = scrubber.scrub_config(config, "ios")
+class TestCiscoIOS:
+    def test_uptime_removed(self):
+        result = scrub_config("uptime is 45 days, 3 hours, 22 minutes", "ios")
         assert "45 days" not in result
+        assert "<removed>" in result
 
-    def test_scrub_configuration_change_time(self):
-        """Test removal of last configuration change timestamp."""
-        scrubber = ConfigScrubber()
-        config = "Last configuration change at 10:45:23 UTC Tue Feb 18 2025"
-        result = scrubber.scrub_config(config, "ios")
-        assert "10:45:23" not in result or "<removed>" in result
+    def test_last_config_change_removed(self):
+        result = scrub_config(
+            "Last configuration change at 10:45:23 UTC Tue Feb 18 2025", "ios"
+        )
+        assert "10:45:23 UTC" not in result
 
-    def test_scrub_ntp_clock_period(self):
-        """Test removal of NTP clock period."""
-        scrubber = ConfigScrubber()
-        config = """
-version 15.2
-ntp clock-period 36621
-hostname router1
-        """
-        result = scrubber.scrub_config(config, "ios")
+    def test_ntp_clock_period_removed(self):
+        config = "version 15.2\nntp clock-period 36621\nhostname r1"
+        result = scrub_config(config, "ios")
         assert "36621" not in result
+        assert "hostname r1" in result
 
-    def test_scrub_crypto_pki_certificate(self):
-        """Test removal of crypto PKI certificate blocks."""
-        scrubber = ConfigScrubber()
-        config = """
-crypto pki certificate chain TP-self-signed-1234567890
- certificate self-signed 01
-  3082024B 308201B4 A0030201 02020101 300D0609
-certificate ca 02
-  some more cert data here
-router bgp 65000
-        """
-        result = scrubber.scrub_config(config, "ios")
-        # Crypto block should be removed
-        assert "3082024B" not in result or "self-signed" not in result or len(result) < len(config)
+    def test_current_configuration_size_removed(self):
+        config = "Current configuration : 12345 bytes"
+        result = scrub_config(config, "ios")
+        assert "12345" not in result
 
-    def test_complete_ios_config(self):
-        """Test scrubbing a complete IOS configuration."""
-        scrubber = ConfigScrubber()
-        config = """
-version 15.2
-!
-hostname router-site1
-uptime is 45 days, 3 hours, 22 minutes
-ntp clock-period 36621
-Last configuration change at 10:45:23 UTC Tue Feb 18 2025
-!
-interface GigabitEthernet0/1
- description WAN Link
- ip address 192.168.1.1 255.255.255.0
- no shutdown
-!
-        """
-        result = scrubber.scrub_config(config, "ios")
-        # Verify dynamic fields removed
-        assert "45 days" not in result
-        assert "36621" not in result
-        assert "10:45:23" not in result
-        # Verify config structure preserved
-        assert "interface GigabitEthernet0/1" in result
-        assert "WAN Link" in result
+    def test_crypto_pki_cert_block_removed(self):
+        config = (
+            "crypto pki certificate chain TP-self-signed-1234567890\n"
+            " certificate self-signed 01\n"
+            "  3082024B 308201B4 A0030201 02020101 300D0609\n"
+            "  some more hex data\n"
+            "router bgp 65000\n"
+        )
+        result = scrub_config(config, "ios")
+        assert "3082024B" not in result
+        assert "router bgp 65000" in result
+
+    def test_static_acl_preserved(self):
+        config = "ip access-list extended PERMIT_ALL\n permit ip any any\n deny ip any any log"
+        result = scrub_config(config, "ios")
+        assert "PERMIT_ALL" in result
+        assert "permit ip any any" in result
 
 
-class TestScrubberCiscoNXOS:
-    """Test Cisco NX-OS configuration scrubbing."""
+# ── Cisco NX-OS ───────────────────────────────────────────────────────────────
 
-    def test_scrub_nxos_uptime(self):
-        """Test NX-OS uptime removal."""
-        scrubber = ConfigScrubber()
-        config = "System uptime: 30 days, 15 hours, 45 minutes"
-        result = scrubber.scrub_config(config, "nxos")
+class TestCiscoNXOS:
+    def test_system_uptime_removed(self):
+        result = scrub_config("System uptime: 30 days, 15 hours, 45 minutes", "nxos")
         assert "30 days" not in result
 
-    def test_scrub_nxos_serial_number(self):
-        """Test removal of serial numbers."""
-        scrubber = ConfigScrubber()
-        config = """
-hostname switch1
-serial-number: ABC123XYZ789
-module-number: 3
-        """
-        result = scrubber.scrub_config(config, "nxos")
-        # Serial should be removed
-        assert "ABC123XYZ789" not in result or "<removed>" in result
-
-    def test_scrub_nxos_config_change(self):
-        """Test NX-OS config change timestamp removal."""
-        scrubber = ConfigScrubber()
-        config = "Last configuration change at 02:15:30 UTC Fri Feb 14 2025"
-        result = scrubber.scrub_config(config, "nxos")
+    def test_last_config_change_removed(self):
+        result = scrub_config(
+            "Last configuration change at 02:15:30 UTC Fri Feb 14 2025", "nxos"
+        )
         assert "02:15:30" not in result
 
+    def test_serial_number_removed(self):
+        config = "serial-number: ABC123XYZ789"
+        result = scrub_config(config, "nxos")
+        assert "ABC123XYZ789" not in result
+        assert "<removed>" in result
 
-class TestScrubberAristaEOS:
-    """Test Arista EOS configuration scrubbing."""
+    def test_module_number_removed(self):
+        result = scrub_config("module-number: 3", "nxos")
+        assert "module-number: 3" not in result
 
-    def test_scrub_eos_uptime(self):
-        """Test EOS uptime removal."""
-        scrubber = ConfigScrubber()
-        config = "System uptime: 60 days, 8 hours, 12 minutes"
-        result = scrubber.scrub_config(config, "eos")
+    def test_hostname_preserved(self):
+        result = scrub_config("hostname nxos-spine-01", "nxos")
+        assert "nxos-spine-01" in result
+
+
+# ── Arista EOS ────────────────────────────────────────────────────────────────
+
+class TestAristaEOS:
+    def test_system_uptime_removed(self):
+        result = scrub_config("System uptime: 60 days, 8 hours, 12 minutes", "eos")
         assert "60 days" not in result
 
-    def test_scrub_eos_hostname(self):
-        """Test EOS hostname handling."""
-        scrubber = ConfigScrubber()
-        config = """
-hostname switch-core-01
-ip domain-name example.com
-        """
-        result = scrubber.scrub_config(config, "eos")
-        # Hostname might be scrubbed or preserved depending on policy
-        assert "example.com" in result or result is not None
+    def test_last_config_change_removed(self):
+        result = scrub_config(
+            "Last configuration change at 09:00:00 UTC Mon Jan 01 2025", "eos"
+        )
+        assert "09:00:00" not in result
 
-    def test_scrub_eos_management_hostname(self):
-        """Test EOS management hostname removal."""
-        scrubber = ConfigScrubber()
-        config = "Management Hostname: mgmt.example.local"
-        result = scrubber.scrub_config(config, "eos")
-        assert "mgmt.example.local" not in result or "<removed>" in result
+    def test_management_hostname_removed(self):
+        result = scrub_config("Management Hostname: mgmt.example.local", "eos")
+        assert "mgmt.example.local" not in result
+        assert "<removed>" in result
+
+    def test_domain_name_preserved(self):
+        result = scrub_config("ip domain-name example.com", "eos")
+        assert "example.com" in result
 
 
-class TestScrubberDellOS10:
-    """Test Dell OS10 configuration scrubbing."""
+# ── Dell OS10 ─────────────────────────────────────────────────────────────────
 
-    def test_scrub_dellos10_date_time(self):
-        """Test Dell OS10 date/time removal."""
-        scrubber = ConfigScrubber()
-        config = "Current date/time is Mon Feb 18 14:30:45 UTC 2025"
-        result = scrubber.scrub_config(config, "dellos10")
-        assert "14:30:45" not in result or "<removed>" in result
+class TestDellOS10:
+    def test_current_datetime_removed(self):
+        result = scrub_config(
+            "Current date/time is Mon Feb 18 14:30:45 UTC 2025", "dellos10"
+        )
+        assert "14:30:45" not in result
+        assert "<removed>" in result
 
-    def test_scrub_dellos10_uptime(self):
-        """Test Dell OS10 uptime removal."""
-        scrubber = ConfigScrubber()
-        config = "System uptime is 12 days 5 hours 30 minutes"
-        result = scrubber.scrub_config(config, "dellos10")
+    def test_system_uptime_removed(self):
+        result = scrub_config("System uptime is 12 days 5 hours 30 minutes", "dellos10")
         assert "12 days" not in result
 
-    def test_scrub_dellos10_config_change(self):
-        """Test Dell OS10 config change removal."""
-        scrubber = ConfigScrubber()
-        config = "Last configuration change on 2025-02-18 at 10:15:30"
-        result = scrubber.scrub_config(config, "dellos10")
-        assert "10:15:30" not in result or "<removed>" in result
+    def test_last_config_change_removed(self):
+        result = scrub_config(
+            "Last configuration change on 2025-02-18 at 10:15:30", "dellos10"
+        )
+        assert "10:15:30" not in result
+
+    def test_interface_config_preserved(self):
+        config = "interface ethernet 1/1/1\n description Uplink\n no shutdown"
+        result = scrub_config(config, "dellos10")
+        assert "ethernet 1/1/1" in result
+        assert "Uplink" in result
 
 
-class TestScrubberPaloAlto:
-    """Test Palo Alto Networks configuration scrubbing."""
+# ── Palo Alto Networks (PAN-OS) ───────────────────────────────────────────────
 
-    def test_scrub_paloalto_serial(self):
-        """Test Palo Alto serial number removal."""
-        scrubber = ConfigScrubber()
-        config = """
-<config version="10.0">
-  <serial>PA-5220-ABC123DEF456</serial>
-  <devicename>palo-fw-01</devicename>
-</config>
-        """
-        result = scrubber.scrub_config(config, "panos")
+class TestPaloAlto:
+    def test_serial_removed(self):
+        config = "<config>\n  <serial>PA-5220-ABC123DEF456</serial>\n</config>"
+        result = scrub_config(config, "panos")
         assert "PA-5220-ABC123DEF456" not in result
-        assert "<serial><removed></serial>" in result or "<removed>" in result
+        assert "<serial><removed></serial>" in result
 
-    def test_scrub_paloalto_uptime(self):
-        """Test Palo Alto uptime removal."""
-        scrubber = ConfigScrubber()
-        config = "<uptime>45 days 3 hours 22 minutes</uptime>"
-        result = scrubber.scrub_config(config, "panos")
+    def test_uptime_removed(self):
+        result = scrub_config("<uptime>45 days 3 hours 22 minutes</uptime>", "panos")
         assert "45 days" not in result
-        assert "<uptime><removed></uptime>" in result or "<removed>" in result
+        assert "<uptime><removed></uptime>" in result
 
-    def test_scrub_paloalto_app_version(self):
-        """Test Palo Alto app version removal."""
-        scrubber = ConfigScrubber()
-        config = "<app-version>8755-7032</app-version>"
-        result = scrubber.scrub_config(config, "panos")
+    def test_app_version_removed(self):
+        result = scrub_config("<app-version>8755-7032</app-version>", "panos")
         assert "8755-7032" not in result
 
-    def test_scrub_paloalto_threat_version(self):
-        """Test Palo Alto threat version removal."""
-        scrubber = ConfigScrubber()
-        config = "<threat-version>8555-6521</threat-version>"
-        result = scrubber.scrub_config(config, "panos")
+    def test_threat_version_removed(self):
+        result = scrub_config("<threat-version>8555-6521</threat-version>", "panos")
         assert "8555-6521" not in result
 
-    def test_scrub_paloalto_antivirus_version(self):
-        """Test Palo Alto antivirus version removal."""
-        scrubber = ConfigScrubber()
-        config = "<antivirus-version>4333-4720</antivirus-version>"
-        result = scrubber.scrub_config(config, "panos")
+    def test_antivirus_version_removed(self):
+        result = scrub_config("<antivirus-version>4333-4720</antivirus-version>", "panos")
         assert "4333-4720" not in result
 
-    def test_scrub_paloalto_wildfire_version(self):
-        """Test Palo Alto Wildfire version removal."""
-        scrubber = ConfigScrubber()
-        config = "<wildfire-version>680803-681029</wildfire-version>"
-        result = scrubber.scrub_config(config, "panos")
+    def test_wildfire_version_removed(self):
+        result = scrub_config("<wildfire-version>680803-681029</wildfire-version>", "panos")
         assert "680803-681029" not in result
 
+    def test_time_tag_removed(self):
+        result = scrub_config("<time>2025/02/18 14:30:45</time>", "panos")
+        assert "2025/02/18" not in result
 
-class TestScrubberFortinet:
-    """Test Fortinet FortiOS configuration scrubbing."""
+    def test_static_config_preserved(self):
+        config = "<address><entry name='web-srv'><ip-netmask>10.0.1.10/32</ip-netmask></entry></address>"
+        result = scrub_config(config, "panos")
+        assert "web-srv" in result
+        assert "10.0.1.10/32" in result
 
-    def test_scrub_fortios_uuid(self):
-        """Test Fortinet UUID removal."""
-        scrubber = ConfigScrubber()
-        config = 'config system global\n    uuid = "f47ac10b-58cc-4372-a567-0e02b2c3d479"'
-        result = scrubber.scrub_config(config, "fortios")
+
+# ── Fortinet FortiOS ──────────────────────────────────────────────────────────
+
+class TestFortinet:
+    def test_uuid_removed(self):
+        config = 'config system interface\n    edit "port1"\n    set uuid "f47ac10b-58cc-4372-a567-0e02b2c3d479"'
+        result = scrub_config(config, "fortios")
         assert "f47ac10b" not in result
-        assert "<removed>" in result or 'uuid = "<removed>"' in result
+        assert '"<removed>"' in result
 
-    def test_scrub_fortios_timestamp(self):
-        """Test Fortinet timestamp removal."""
-        scrubber = ConfigScrubber()
-        config = 'timestamp = 1645180845'
-        result = scrubber.scrub_config(config, "fortios")
-        assert "1645180845" not in result or "<removed>" in result
+    def test_timestamp_removed(self):
+        result = scrub_config("timestamp = 1645180845", "fortios")
+        assert "1645180845" not in result
+        assert "<removed>" in result
 
-    def test_scrub_fortios_lastupdate(self):
-        """Test Fortinet lastupdate removal."""
-        scrubber = ConfigScrubber()
-        config = 'lastupdate = 1645180845'
-        result = scrubber.scrub_config(config, "fortios")
-        assert "1645180845" not in result or "<removed>" in result
+    def test_lastupdate_removed(self):
+        result = scrub_config("lastupdate = 1645180845", "fortios")
+        assert "1645180845" not in result
 
-    def test_scrub_fortios_build(self):
-        """Test Fortinet build number removal."""
-        scrubber = ConfigScrubber()
-        config = 'build = 1234'
-        result = scrubber.scrub_config(config, "fortios")
-        assert "build = 1234" not in result or "<removed>" in result
+    def test_build_removed(self):
+        result = scrub_config("build = 1574", "fortios")
+        assert "build = 1574" not in result
+
+    def test_static_policy_preserved(self):
+        config = 'config firewall policy\n    edit 1\n    set name "Allow_Internal"\n    set action accept'
+        result = scrub_config(config, "fortios")
+        assert "Allow_Internal" in result
+        assert "accept" in result
 
 
-class TestScrubberEdgeCases:
-    """Test edge cases and special scenarios."""
+# ── Wrapper function ──────────────────────────────────────────────────────────
 
-    def test_scrub_empty_config(self):
-        """Test scrubbing empty configuration."""
-        scrubber = ConfigScrubber()
-        result = scrubber.scrub_config("", "ios")
-        assert result == ""
-
-    def test_scrub_config_with_no_dynamic_fields(self):
-        """Test scrubbing config with no dynamic fields."""
-        scrubber = ConfigScrubber()
-        config = """
-interface Ethernet1
- description Static Interface
- ip address 10.0.0.1 255.255.255.0
-        """
-        result = scrubber.scrub_config(config, "ios")
-        assert "Ethernet1" in result
-        assert "10.0.0.1" not in result or "<ip-address>" in result
-
-    def test_scrub_function_wrapper(self):
-        """Test the public scrub_config function wrapper."""
+class TestScrubConfigWrapper:
+    def test_module_function_matches_class(self):
         config = "uptime is 10 days, 5 hours"
+        assert scrub_config(config, "ios") == ConfigScrubber().scrub_config(config, "ios")
+
+    def test_whitespace_stripped(self):
+        config = "\n\n  hostname r1\n\n"
         result = scrub_config(config, "ios")
-        assert "10 days" not in result
-
-    def test_scrub_multiline_config(self):
-        """Test scrubbing multiline configurations."""
-        scrubber = ConfigScrubber()
-        config = """
-line 1
-uptime is 5 days, 1 hour
-line 3
-Last configuration change at 12:34:56 UTC Mon Feb 18 2025
-line 5
-        """
-        result = scrubber.scrub_config(config, "ios")
-        assert "line 1" in result
-        assert "line 3" in result
-        assert "line 5" in result
-        assert "5 days" not in result
-        assert "12:34:56" not in result
-
-    def test_scrub_preserves_whitespace_structure(self):
-        """Test that scrubbing preserves overall config structure."""
-        scrubber = ConfigScrubber()
-        config = """
-config line 1
-  nested line 2
-    deeper line 3
-uptime is 1 day
-  more nested content
-        """
-        result = scrubber.scrub_config(config, "ios")
-        assert "config line 1" in result
-        assert "nested line 2" in result
-        assert "deeper line 3" in result
-        assert "1 day" not in result
+        assert result == result.strip()

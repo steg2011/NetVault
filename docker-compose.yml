@@ -10,10 +10,9 @@ services:
       POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme}
     volumes:
       - db_data:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
+      - ./scripts/init-gitea-db.sh:/docker-entrypoint-initdb.d/10-init-gitea-db.sh
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-agncf_user}"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-agncf_user} -d ${DB_NAME:-agncf}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -21,16 +20,19 @@ services:
       - agncf_net
 
   gitea:
-    image: gitea/gitea:latest
+    image: gitea/gitea:1.21.4@sha256:c9efa5e6a593cfe0b5db10dfd5f55e56e3e53c71e7a76b58ac0e7d9fd0e02d26
     container_name: agncf-gitea
     environment:
-      ROOT_URL: http://gitea:3000
-      DB_TYPE: postgres
-      DB_HOST: db:5432
-      DB_NAME: ${DB_NAME:-agncf}
-      DB_USER: ${DB_USER:-agncf_user}
-      DB_PASSWD: ${DB_PASSWORD:-changeme}
-      GITEA__SECURITY__SECRET_KEY: ${GITEA_SECRET_KEY:-your-secret-key-change-me}
+      GITEA__database__DB_TYPE: postgres
+      GITEA__database__HOST: db:5432
+      GITEA__database__NAME: gitea
+      GITEA__database__USER: ${DB_USER:-agncf_user}
+      GITEA__database__PASSWD: ${DB_PASSWORD:-changeme}
+      GITEA__server__ROOT_URL: http://gitea:3000
+      GITEA__server__HTTP_PORT: "3000"
+      GITEA__security__SECRET_KEY: ${GITEA_SECRET_KEY:-changeme-gitea-secret-key-minimum-64-chars-pad-here-0000000000}
+      GITEA__security__INTERNAL_TOKEN: ${GITEA_INTERNAL_TOKEN:-changeme-gitea-internal-token-minimum-64-chars-pad-00000000000}
+      GITEA__log__LEVEL: Warn
     volumes:
       - gitea_data:/data
     ports:
@@ -46,15 +48,12 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: agncf-app
+    env_file:
+      - .env
     environment:
       DATABASE_URL: postgresql+asyncpg://${DB_USER:-agncf_user}:${DB_PASSWORD:-changeme}@db:5432/${DB_NAME:-agncf}
       GITEA_URL: http://gitea:3000
-      GITEA_TOKEN: ${GITEA_TOKEN:-your-token-here}
       GITEA_ORG: ${GITEA_ORG:-agncf}
-      FERNET_KEY: ${FERNET_KEY:-}
-      NET_USER_GLOBAL: ${NET_USER_GLOBAL:-}
-      NET_PASS_GLOBAL: ${NET_PASS_GLOBAL:-}
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
     volumes:
       - ./backups:/app/backups
     ports:
@@ -64,7 +63,7 @@ services:
         condition: service_healthy
     networks:
       - agncf_net
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 volumes:
   db_data:
