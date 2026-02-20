@@ -20,7 +20,7 @@ services:
       - agncf_net
 
   gitea:
-    image: gitea/gitea:1.21.4@sha256:c9efa5e6a593cfe0b5db10dfd5f55e56e3e53c71e7a76b58ac0e7d9fd0e02d26
+    image: gitea/gitea:1.21.4
     container_name: agncf-gitea
     environment:
       GITEA__database__DB_TYPE: postgres

@@ -99,6 +99,11 @@ function renderJobs(jobs) {
 
         const statusBadge = `<span class="badge badge-${job.status}">${job.status}</span>`;
 
+        const actionBtns = job.status === 'running'
+            ? `<button class="btn btn-sm btn-danger" onclick="cancelJob(${job.id})">Cancel</button>`
+            : `<button class="btn btn-sm btn-secondary" onclick="rerunJob(${job.id})">Rerun</button>
+               <button class="btn btn-sm btn-danger" onclick="deleteJob(${job.id})">Delete</button>`;
+
         return `
             <tr>
                 <td><strong>#${job.id}</strong></td>
@@ -108,8 +113,9 @@ function renderJobs(jobs) {
                 <td>${job.completed_devices}/${job.total_devices} (${progress}%)</td>
                 <td>${job.failed_devices}</td>
                 <td>${durationStr}</td>
-                <td>
+                <td style="display: flex; gap: 4px;">
                     <button class="btn btn-sm btn-secondary" onclick="viewJobDetails(${job.id})">View</button>
+                    ${actionBtns}
                 </td>
             </tr>
         `;
@@ -192,6 +198,55 @@ async function startBackup() {
 
 function viewJobDetails(jobId) {
     window.location.href = `/job/${jobId}`;
+}
+
+async function rerunJob(jobId) {
+    try {
+        const response = await fetch(`/api/backups/jobs/${jobId}/rerun`, { method: 'POST' });
+        if (response.ok) {
+            const job = await response.json();
+            loadJobs();
+            viewJobDetails(job.id);
+        } else {
+            const err = await response.json();
+            alert(`Error: ${err.detail}`);
+        }
+    } catch (e) {
+        console.error('Error rerunning job:', e);
+        alert('Error rerunning job');
+    }
+}
+
+async function cancelJob(jobId) {
+    if (!confirm(`Cancel backup job #${jobId}? It will be marked as failed.`)) return;
+    try {
+        const response = await fetch(`/api/backups/jobs/${jobId}/cancel`, { method: 'POST' });
+        if (response.ok) {
+            loadJobs();
+        } else {
+            const err = await response.json();
+            alert(`Error: ${err.detail}`);
+        }
+    } catch (e) {
+        console.error('Error cancelling job:', e);
+        alert('Error cancelling job');
+    }
+}
+
+async function deleteJob(jobId) {
+    if (!confirm(`Delete backup job #${jobId} and all its results? This cannot be undone.`)) return;
+    try {
+        const response = await fetch(`/api/backups/jobs/${jobId}`, { method: 'DELETE' });
+        if (response.ok || response.status === 204) {
+            loadJobs();
+        } else {
+            const err = await response.json();
+            alert(`Error: ${err.detail}`);
+        }
+    } catch (e) {
+        console.error('Error deleting job:', e);
+        alert('Error deleting job');
+    }
 }
 
 document.addEventListener('DOMContentLoaded', loadJobs);

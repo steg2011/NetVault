@@ -3,19 +3,22 @@ Async Gitea API client.
 
 Responsibilities
 ────────────────
-• ensure_repo(site_code, repo_name) — create an org-level repo if absent (idempotent)
+• ensure_repo(site_code, repo_name) — create org + repo if absent (idempotent)
 • commit_config(repo, device_hostname, config_text, commit_message)
-  — create or update {hostname}.txt in the repo via the Contents API
-• get_diff(repo, device_hostname)
-  — retrieve unified diff between the two most recent commits for the file
+• get_file_content(repo, device_hostname) — fetch latest config text
+• get_diff(repo, device_hostname) — unified diff between last two commits
 """
 import logging
-from base64 import b64encode
+from base64 import b64decode, b64encode
 from typing import Optional
 
 import httpx
 
 logger = logging.getLogger(__name__)
+
+# Seconds to wait for Gitea API responses
+_TIMEOUT = 30
+_COMMIT_TIMEOUT = 60
 
 
 class GiteaClient:
@@ -35,44 +38,45 @@ class GiteaClient:
 
     async def ensure_repo(self, site_code: str, repo_name: str) -> str:
         """
-        Ensure {org}/{repo_name} exists.  Creates the repo if absent.
+        Ensure {org}/{repo_name} exists. Creates the org and repo if absent.
         Returns the full repo name ("{org}/{repo_name}").
+        Idempotent — safe to call on every backup.
         """
         repo_full = f"{self.org}/{repo_name}"
 
-        async with httpx.AsyncClient(timeout=30) as client:
-            # Check existence
-            resp = await client.get(
+        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+
+            # 1. Check if repo already exists — fastest path
+            repo_resp = await client.get(
                 f"{self.base_url}/api/v1/repos/{repo_full}",
                 headers=self._headers,
             )
-            if resp.status_code == 200:
+            if repo_resp.status_code == 200:
                 logger.debug("Repo %s already exists", repo_full)
                 return repo_full
 
-            # Create org if it doesn't exist yet (admin API)
-            org_check = await client.get(
+            # 2. Ensure the organisation exists
+            org_resp = await client.get(
                 f"{self.base_url}/api/v1/orgs/{self.org}",
                 headers=self._headers,
             )
-            if org_check.status_code == 404:
+            if org_resp.status_code != 200:
+                logger.info("Org %s not found (HTTP %d) — creating", self.org, org_resp.status_code)
+                # Use POST /api/v1/orgs (standard endpoint, not /admin/orgs)
                 create_org = await client.post(
-                    f"{self.base_url}/api/v1/admin/orgs",
+                    f"{self.base_url}/api/v1/orgs",
                     headers=self._headers,
-                    json={
-                        "username": self.org,
-                        "visibility": "private",
-                    },
-                    timeout=30,
+                    json={"username": self.org, "visibility": "private"},
                 )
-                if create_org.status_code not in (200, 201):
-                    logger.warning(
-                        "Could not create org %s (may require admin token): %s",
-                        self.org,
-                        create_org.text,
+                if create_org.status_code in (200, 201):
+                    logger.info("Created Gitea org '%s'", self.org)
+                else:
+                    raise RuntimeError(
+                        f"Could not create org '{self.org}': "
+                        f"HTTP {create_org.status_code} — {create_org.text}"
                     )
 
-            # Create the repository under the organisation
+            # 3. Create the repository under the organisation
             create_resp = await client.post(
                 f"{self.base_url}/api/v1/orgs/{self.org}/repos",
                 headers=self._headers,
@@ -83,14 +87,20 @@ class GiteaClient:
                     "auto_init": True,
                     "default_branch": "main",
                 },
-                timeout=30,
             )
+
             if create_resp.status_code in (200, 201):
                 logger.info("Created repo %s", repo_full)
                 return repo_full
 
+            # 409 = already exists (race condition between concurrent jobs) — fine
+            if create_resp.status_code == 409:
+                logger.debug("Repo %s already exists (concurrent create)", repo_full)
+                return repo_full
+
             raise RuntimeError(
-                f"Could not create repo {repo_full}: HTTP {create_resp.status_code} — {create_resp.text}"
+                f"Could not create repo {repo_full}: "
+                f"HTTP {create_resp.status_code} — {create_resp.text}"
             )
 
     # ── File commit ────────────────────────────────────────────────────────────
@@ -104,88 +114,138 @@ class GiteaClient:
     ) -> str:
         """
         Create or update {device_hostname}.txt in *repo* via the Contents API.
-
-        Returns the commit SHA (empty string if the API does not return one).
+        Returns the commit SHA (empty string if unavailable).
         """
         file_path = f"{device_hostname}.txt"
         encoded_content = b64encode(config_text.encode()).decode()
 
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=_COMMIT_TIMEOUT) as client:
             url = f"{self.base_url}/api/v1/repos/{repo}/contents/{file_path}"
 
-            # Retrieve current file SHA for update requests
+            # Fetch current file SHA — needed for updates (Gitea requires it)
             current_sha: Optional[str] = None
             get_resp = await client.get(url, headers=self._headers)
             if get_resp.status_code == 200:
                 current_sha = get_resp.json().get("sha")
+            elif get_resp.status_code not in (404,):
+                logger.warning(
+                    "Unexpected response fetching current SHA for %s: HTTP %d",
+                    file_path, get_resp.status_code,
+                )
 
             payload: dict = {
                 "content": encoded_content,
                 "message": commit_message,
                 "branch": "main",
             }
+
             if current_sha:
+                # File exists — update requires PUT + current SHA
                 payload["sha"] = current_sha
+                resp = await client.put(url, headers=self._headers, json=payload)
+            else:
+                # File does not exist yet — creation requires POST (no SHA)
+                resp = await client.post(url, headers=self._headers, json=payload)
 
-            put_resp = await client.put(url, headers=self._headers, json=payload, timeout=60)
-
-        if put_resp.status_code in (200, 201):
-            commit_sha: str = put_resp.json().get("commit", {}).get("sha", "")
+        if resp.status_code in (200, 201):
+            commit_sha: str = resp.json().get("commit", {}).get("sha", "")
             logger.info("Committed %s → %s  sha=%s…", file_path, repo, commit_sha[:12])
             return commit_sha
 
         raise RuntimeError(
-            f"Commit failed for {file_path} in {repo}: HTTP {put_resp.status_code} — {put_resp.text}"
+            f"Commit failed for {file_path} in {repo}: "
+            f"HTTP {resp.status_code} — {resp.text}"
         )
+
+    # ── File content retrieval ─────────────────────────────────────────────────
+
+    async def get_file_content(self, repo: str, device_hostname: str) -> str:
+        """Return the current content of {device_hostname}.txt from the repo."""
+        file_path = f"{device_hostname}.txt"
+        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+            resp = await client.get(
+                f"{self.base_url}/api/v1/repos/{repo}/contents/{file_path}",
+                headers=self._headers,
+            )
+        if resp.status_code == 404:
+            raise RuntimeError(f"No backup found for {device_hostname} in {repo}")
+        if resp.status_code != 200:
+            raise RuntimeError(
+                f"Could not fetch {file_path}: HTTP {resp.status_code}"
+            )
+        return b64decode(resp.json()["content"]).decode()
 
     # ── Diff retrieval ─────────────────────────────────────────────────────────
 
     async def get_diff(self, repo: str, device_hostname: str) -> str:
         """
-        Return the unified diff between the two most recent commits that
-        touched {device_hostname}.txt.
+        Return a unified diff between the two most recent backups for
+        {device_hostname}.txt.
 
-        Returns a human-readable message string if fewer than 2 commits exist.
+        Gitea's /compare endpoint is not available in all versions, so we
+        fetch both file versions directly via the contents API and generate
+        the diff locally using difflib.
         """
+        import difflib
+
         file_path = f"{device_hostname}.txt"
 
-        async with httpx.AsyncClient(timeout=30) as client:
+        # 1. Get the last 2 commits that touched this file
+        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
             commits_resp = await client.get(
                 f"{self.base_url}/api/v1/repos/{repo}/commits",
                 headers=self._headers,
                 params={"path": file_path, "limit": 2},
-                timeout=30,
             )
 
         if commits_resp.status_code != 200:
-            return f"Could not retrieve commits for {file_path}: HTTP {commits_resp.status_code}"
+            return (
+                f"Could not retrieve commits for {file_path}: "
+                f"HTTP {commits_resp.status_code}"
+            )
 
         commits = commits_resp.json()
         if len(commits) < 2:
-            return f"Only {len(commits)} commit(s) found for {file_path} — no diff available yet."
-
-        previous_sha = commits[1]["sha"]
-        latest_sha = commits[0]["sha"]
-
-        async with httpx.AsyncClient(timeout=30) as client:
-            diff_resp = await client.get(
-                f"{self.base_url}/api/v1/repos/{repo}/compare/{previous_sha}...{latest_sha}",
-                headers=self._headers,
-                timeout=30,
+            return (
+                f"Only {len(commits)} commit(s) found — "
+                "run at least two backups to see a diff."
             )
 
-        if diff_resp.status_code != 200:
-            return f"Diff API returned HTTP {diff_resp.status_code}"
+        latest_sha   = commits[0]["sha"]
+        previous_sha = commits[1]["sha"]
+        latest_date   = commits[0].get("commit", {}).get("committer", {}).get("date", latest_sha[:12])
+        previous_date = commits[1].get("commit", {}).get("committer", {}).get("date", previous_sha[:12])
 
-        diff_data = diff_resp.json()
-        files = diff_data.get("files", [])
-        if not files:
-            return "No file changes in this diff."
+        # 2. Fetch file content at each commit ref
+        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+            prev_resp = await client.get(
+                f"{self.base_url}/api/v1/repos/{repo}/contents/{file_path}",
+                headers=self._headers,
+                params={"ref": previous_sha},
+            )
+            new_resp = await client.get(
+                f"{self.base_url}/api/v1/repos/{repo}/contents/{file_path}",
+                headers=self._headers,
+                params={"ref": latest_sha},
+            )
 
-        # Find the specific file in the diff result
-        for file_info in files:
-            if device_hostname in file_info.get("filename", ""):
-                patch = file_info.get("patch", "")
-                return patch or "File changed but patch is empty."
+        if prev_resp.status_code != 200:
+            return f"Could not fetch previous version: HTTP {prev_resp.status_code}"
+        if new_resp.status_code != 200:
+            return f"Could not fetch latest version: HTTP {new_resp.status_code}"
 
-        return "No changes found for this device in the diff."
+        prev_text = b64decode(prev_resp.json()["content"]).decode()
+        new_text  = b64decode(new_resp.json()["content"]).decode()
+
+        # 3. Generate unified diff locally
+        diff_lines = list(difflib.unified_diff(
+            prev_text.splitlines(keepends=True),
+            new_text.splitlines(keepends=True),
+            fromfile=f"{file_path} ({previous_date})",
+            tofile=f"{file_path} ({latest_date})",
+        ))
+
+        if not diff_lines:
+            return "Config unchanged since last backup."
+
+        return "".join(diff_lines)

@@ -24,20 +24,21 @@ PatternList = List[Tuple[str, str]]
 
 _PATTERNS: Dict[str, PatternList] = {
     "ios": [
-        (r"uptime is .+",                                 "uptime is <removed>"),
-        (r"Last configuration change at .+",              "Last configuration change at <removed>"),
-        (r"ntp clock-period \d+",                        "ntp clock-period <removed>"),
+        # Use [^\n]+ so these never swallow past the end of the line,
+        # even when re.DOTALL is active for the crypto block below.
+        (r"uptime is [^\n]+",                             "uptime is <removed>"),
+        (r"Last configuration change at [^\n]+",          "Last configuration change at <removed>"),
+        (r"ntp clock-period \d+",                         "ntp clock-period <removed>"),
         (r"Current configuration : \d+ bytes",            "Current configuration : <removed> bytes"),
-        # Multi-line crypto PKI certificate block: from the keyword to the next
-        # non-indented line (a blank line or a keyword).
+        # Multi-line crypto PKI certificate block — requires re.DOTALL.
         (
             r"^crypto pki certificate .+?(?=\n\S|\Z)",
             "<crypto-pki-cert-block-removed>",
         ),
     ],
     "nxos": [
-        (r"System uptime:.+",                             "System uptime: <removed>"),
-        (r"Last configuration change at .+",              "Last configuration change at <removed>"),
+        (r"System uptime:[^\n]+",                         "System uptime: <removed>"),
+        (r"Last configuration change at [^\n]+",          "Last configuration change at <removed>"),
         (r"serial-number: \S+",                           "serial-number: <removed>"),
         (r"module-number: \d+",                           "module-number: <removed>"),
         (
@@ -46,14 +47,14 @@ _PATTERNS: Dict[str, PatternList] = {
         ),
     ],
     "eos": [
-        (r"System uptime:.+",                             "System uptime: <removed>"),
-        (r"Last configuration change at .+",              "Last configuration change at <removed>"),
-        (r"Management Hostname:.+",                       "Management Hostname: <removed>"),
+        (r"System uptime:[^\n]+",                         "System uptime: <removed>"),
+        (r"Last configuration change at [^\n]+",          "Last configuration change at <removed>"),
+        (r"Management Hostname:[^\n]+",                   "Management Hostname: <removed>"),
     ],
     "dellos10": [
-        (r"Current date/time is.+",                       "Current date/time is <removed>"),
-        (r"System uptime is .+",                          "System uptime is <removed>"),
-        (r"Last configuration change on .+",              "Last configuration change on <removed>"),
+        (r"Current date/time is[^\n]+",                   "Current date/time is <removed>"),
+        (r"System uptime is [^\n]+",                      "System uptime is <removed>"),
+        (r"Last configuration change on [^\n]+",          "Last configuration change on <removed>"),
     ],
     "panos": [
         (r"<serial>.*?</serial>",                         "<serial><removed></serial>"),
@@ -72,7 +73,7 @@ _PATTERNS: Dict[str, PatternList] = {
     ],
     # Applied to every platform after platform-specific patterns.
     "_common": [
-        # ISO-8601-style timestamps embedded in config comments / show output
+        # ISO-8601-style timestamps — [^\n]* ensures we never cross a line boundary
         (r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?",
          "<timestamp>"),
     ],

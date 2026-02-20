@@ -1,15 +1,17 @@
 import logging
+import math
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_
-from typing import List
+from sqlalchemy import select, and_, func, or_
+from typing import List, Optional
 
 from app.database import get_db_session
-from app.models import Site, Device, CredentialSet
+from app.models import Site, Device, CredentialSet, BackupResult
 from app.schemas import (
     SiteCreate, SiteUpdate, SiteResponse,
     DeviceCreate, DeviceUpdate, DeviceResponse,
-    CredentialSetCreate, CredentialSetUpdate, CredentialSetResponse
+    CredentialSetCreate, CredentialSetUpdate, CredentialSetResponse,
+    DeviceStatusItem, DeviceStatusPage,
 )
 
 logger = logging.getLogger(__name__)
@@ -207,6 +209,99 @@ async def list_devices(site_id: int | None = None, session: AsyncSession = Depen
         query = query.where(Device.site_id == site_id)
     result = await session.execute(query.order_by(Device.hostname))
     return result.scalars().all()
+
+
+@router.get("/devices/status", response_model=DeviceStatusPage)
+async def get_device_status(
+    search: str = "",
+    page: int = 1,
+    page_size: int = 50,
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Paginated device list with each device's most recent backup result."""
+    # Subquery: most recent backed_up_at per device
+    latest_sq = (
+        select(
+            BackupResult.device_id,
+            func.max(BackupResult.backed_up_at).label("max_at"),
+        )
+        .group_by(BackupResult.device_id)
+        .subquery()
+    )
+
+    # Build count query
+    count_q = select(func.count(Device.id)).join(Site, Device.site_id == Site.id)
+    if search:
+        term = f"%{search}%"
+        count_q = count_q.where(
+            or_(
+                Device.hostname.ilike(term),
+                Device.ip.ilike(term),
+                Site.code.ilike(term),
+                Site.name.ilike(term),
+            )
+        )
+    total: int = (await session.execute(count_q)).scalar() or 0
+
+    # Build data query
+    data_q = (
+        select(Device, Site, BackupResult)
+        .join(Site, Device.site_id == Site.id)
+        .outerjoin(latest_sq, Device.id == latest_sq.c.device_id)
+        .outerjoin(
+            BackupResult,
+            and_(
+                BackupResult.device_id == Device.id,
+                BackupResult.backed_up_at == latest_sq.c.max_at,
+            ),
+        )
+    )
+    if search:
+        term = f"%{search}%"
+        data_q = data_q.where(
+            or_(
+                Device.hostname.ilike(term),
+                Device.ip.ilike(term),
+                Site.code.ilike(term),
+                Site.name.ilike(term),
+            )
+        )
+
+    page_size = max(1, min(page_size, 200))
+    page = max(1, page)
+    offset = (page - 1) * page_size
+
+    rows = (
+        await session.execute(
+            data_q.order_by(Device.hostname).offset(offset).limit(page_size)
+        )
+    ).all()
+
+    items = [
+        DeviceStatusItem(
+            device_id=device.id,
+            hostname=device.hostname,
+            ip=device.ip,
+            platform=device.platform.value,
+            site_id=site.id,
+            site_name=site.name,
+            site_code=site.code,
+            enabled=device.enabled,
+            last_backup_at=result.backed_up_at if result else None,
+            last_backup_status=result.status.value if result else None,
+            last_backup_error=result.error_message if result else None,
+            last_job_id=result.job_id if result else None,
+        )
+        for device, site, result in rows
+    ]
+
+    return DeviceStatusPage(
+        items=items,
+        total=total,
+        page=page,
+        page_size=page_size,
+        pages=max(1, math.ceil(total / page_size)) if total else 1,
+    )
 
 
 @router.get("/devices/{device_id}", response_model=DeviceResponse)

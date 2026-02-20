@@ -2,12 +2,15 @@ FROM python:3.11-slim-bookworm
 
 WORKDIR /app
 
-# Copy pre-downloaded wheels for offline install
-COPY wheels/ /wheels/
-
-# Install dependencies from local wheels only (no internet required)
+# Copy requirements
 COPY requirements.txt .
-RUN pip install --no-cache-dir --no-index --find-links=/wheels -r requirements.txt
+
+# Install dependencies (from wheels if available, otherwise from PyPI)
+RUN if [ -d /wheels ]; then \
+      pip install --no-cache-dir --no-index --find-links=/wheels -r requirements.txt; \
+    else \
+      pip install --no-cache-dir -r requirements.txt; \
+    fi
 
 # Copy application source
 COPY app/ ./app/

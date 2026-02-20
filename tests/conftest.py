@@ -105,6 +105,68 @@ async def sample_backup_job(test_db_session):
     return job
 
 
+# ── Multi-platform device fixtures ─────────────────────────────────────────
+
+@pytest.fixture
+async def cli_devices(test_db_session, sample_site, sample_credential_set):
+    """Create sample CLI devices for all supported platforms."""
+    platforms = [
+        ("cisco_ios", "router-ios-1", "192.168.1.1", PlatformEnum.IOS),
+        ("cisco_nxos", "router-nxos-1", "192.168.1.2", PlatformEnum.NXOS),
+        ("arista_eos", "switch-eos-1", "192.168.1.3", PlatformEnum.EOS),
+        ("dell_os10", "switch-os10-1", "192.168.1.4", PlatformEnum.OS10),
+    ]
+    devices = []
+    for _, hostname, ip, platform_enum in platforms:
+        device = Device(
+            hostname=hostname,
+            ip=ip,
+            platform=platform_enum,
+            site_id=sample_site.id,
+            credential_id=sample_credential_set.id,
+            enabled=True,
+        )
+        test_db_session.add(device)
+        devices.append(device)
+
+    await test_db_session.commit()
+    for device in devices:
+        await test_db_session.refresh(device)
+    return devices
+
+
+@pytest.fixture
+async def api_devices(test_db_session, sample_site, sample_credential_set):
+    """Create sample API devices for all supported platforms."""
+    platforms = [
+        ("fw-palo-1", "10.4.1.1", PlatformEnum.PANOS),
+        ("fw-fortinet-1", "10.5.1.1", PlatformEnum.FORTIOS),
+    ]
+    devices = []
+    for hostname, ip, platform_enum in platforms:
+        device = Device(
+            hostname=hostname,
+            ip=ip,
+            platform=platform_enum,
+            site_id=sample_site.id,
+            credential_id=sample_credential_set.id,
+            enabled=True,
+        )
+        test_db_session.add(device)
+        devices.append(device)
+
+    await test_db_session.commit()
+    for device in devices:
+        await test_db_session.refresh(device)
+    return devices
+
+
+@pytest.fixture
+async def all_devices(cli_devices, api_devices):
+    """Combine CLI and API devices into one list."""
+    return cli_devices + api_devices
+
+
 # ── Asyncio marker helper ──────────────────────────────────────────────────────
 
 def pytest_collection_modifyitems(config, items):

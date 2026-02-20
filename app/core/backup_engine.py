@@ -18,12 +18,13 @@ import dataclasses
 import hashlib
 import logging
 import queue as sync_queue
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Dict, List, Optional
 
 from nornir.core import Nornir
 from nornir.core.configuration import Config
 from nornir.core.inventory import Host
+from nornir.plugins.runners import ThreadedRunner
 from nornir.core.task import AggregatedResult, MultiResult, Task
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -112,7 +113,7 @@ class BackupEngine:
             logger.error("BackupJob %d not found — aborting", job_id)
             return
 
-        job.started_at = datetime.now(timezone.utc)
+        job.started_at = datetime.utcnow()
         job.status = BackupJobStatus.RUNNING
         await self.session.commit()
 
@@ -157,7 +158,7 @@ class BackupEngine:
             logger.exception("BackupJob %d encountered a fatal error: %s", job_id, exc)
             job.status = BackupJobStatus.FAILED
         finally:
-            job.completed_at = datetime.now(timezone.utc)
+            job.completed_at = datetime.utcnow()
             await self.session.commit()
             await pq.put({
                 "completed": job.completed_devices,
@@ -181,13 +182,8 @@ class BackupEngine:
         processor = _DeviceCompletionProcessor(loop=loop, queue=completion_queue)
 
         inventory = build_nornir_inventory(cli_devices)
-        config = Config(
-            runner={
-                "plugin": "threaded",
-                "options": {"num_workers": self.settings.nornir_num_workers},
-            }
-        )
-        nr = Nornir(inventory=inventory, config=config)
+        runner = ThreadedRunner(num_workers=self.settings.nornir_num_workers)
+        nr = Nornir(inventory=inventory, config=Config(), runner=runner)
         nr = nr.with_processors([processor])
 
         expected = len(cli_devices)

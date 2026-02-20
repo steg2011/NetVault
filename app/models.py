@@ -103,6 +103,30 @@ class BackupJob(Base):
     results = relationship("BackupResult", back_populates="job", cascade="all, delete-orphan")
 
 
+class ScheduleFrequency(str, enum.Enum):
+    """Backup schedule frequency."""
+    HOURLY = "hourly"
+    DAILY = "daily"
+    WEEKLY = "weekly"
+
+
+class BackupSchedule(Base):
+    """Recurring backup schedule."""
+    __tablename__ = "backup_schedules"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(255), nullable=False)
+    frequency = Column(Enum(ScheduleFrequency), nullable=False)
+    hour = Column(Integer, default=2)           # 0-23 (daily/weekly)
+    day_of_week = Column(Integer, default=0)    # 0=Mon … 6=Sun (weekly only)
+    site_id = Column(Integer, ForeignKey("sites.id"), nullable=True)
+    enabled = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    last_run_at = Column(DateTime, nullable=True)
+
+    site = relationship("Site")
+
+
 class BackupResult(Base):
     """Individual device backup result within a job."""
     __tablename__ = "backup_results"

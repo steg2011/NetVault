@@ -171,6 +171,15 @@
             background: #5a6268;
         }
 
+        .btn-danger {
+            background: #dc3545;
+            color: white;
+        }
+
+        .btn-danger:hover {
+            background: #c82333;
+        }
+
         .btn-sm {
             padding: 0.25rem 0.5rem;
             font-size: 0.8rem;
@@ -261,14 +270,6 @@
             border: 1px solid #bee5eb;
         }
 
-        .footer {
-            background: #333;
-            color: white;
-            text-align: center;
-            padding: 1rem;
-            margin-top: auto;
-        }
-
         code {
             background: #f4f4f4;
             padding: 0.2rem 0.4rem;
@@ -294,8 +295,9 @@
         <header class="header">
             <h1>{% block header_title %}Air-Gapped Network Config Fortress{% endblock %}</h1>
             <nav class="nav">
-                <a href="/" class="nav-link">Home</a>
                 <a href="/dashboard" class="nav-link">Dashboard</a>
+                <a href="/device-status" class="nav-link">Device Status</a>
+                <a href="/schedules" class="nav-link">Schedules</a>
                 <a href="/inventory" class="nav-link">Inventory</a>
                 <a href="/api/docs" class="nav-link">API Docs</a>
             </nav>
@@ -305,9 +307,6 @@
             {% block content %}{% endblock %}
         </main>
 
-        <footer class="footer">
-            <p>&copy; 2025 Air-Gapped Network Config Fortress - Production Ready</p>
-        </footer>
     </div>
 
     <script>

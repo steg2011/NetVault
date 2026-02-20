@@ -178,3 +178,69 @@ class DiffResponse(BaseModel):
     device_id: int
     hostname: str
     unified_diff: str
+
+
+# ── Schedules ─────────────────────────────────────────────────────────────────
+
+class ScheduleFrequencySchema(str, Enum):
+    HOURLY = "hourly"
+    DAILY = "daily"
+    WEEKLY = "weekly"
+
+
+class BackupScheduleCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255)
+    frequency: ScheduleFrequencySchema
+    hour: int = Field(2, ge=0, le=23)
+    day_of_week: int = Field(0, ge=0, le=6)
+    site_id: Optional[int] = None
+    enabled: bool = True
+
+
+class BackupScheduleUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=255)
+    frequency: Optional[ScheduleFrequencySchema] = None
+    hour: Optional[int] = Field(None, ge=0, le=23)
+    day_of_week: Optional[int] = Field(None, ge=0, le=6)
+    site_id: Optional[int] = None
+    enabled: Optional[bool] = None
+
+
+class BackupScheduleResponse(BaseModel):
+    id: int
+    name: str
+    frequency: ScheduleFrequencySchema
+    hour: int
+    day_of_week: int
+    site_id: Optional[int] = None
+    enabled: bool
+    created_at: datetime
+    last_run_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+# ── Device status ─────────────────────────────────────────────────────────────
+
+class DeviceStatusItem(BaseModel):
+    device_id: int
+    hostname: str
+    ip: str
+    platform: str
+    site_id: int
+    site_name: str
+    site_code: str
+    enabled: bool
+    last_backup_at: Optional[datetime] = None
+    last_backup_status: Optional[str] = None
+    last_backup_error: Optional[str] = None
+    last_job_id: Optional[int] = None
+
+
+class DeviceStatusPage(BaseModel):
+    items: List[DeviceStatusItem]
+    total: int
+    page: int
+    page_size: int
+    pages: int

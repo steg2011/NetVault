@@ -1,0 +1,132 @@
+{% extends "base.html" %}
+
+{% block title %}Config Viewer — AGNCF{% endblock %}
+{% block header_title %}Configuration Viewer{% endblock %}
+
+{% block styles %}
+{{ super() }}
+.config-toolbar { margin-bottom:1rem; display:flex; gap:.5rem; flex-wrap:wrap; align-items:center; }
+.config-meta    { font-size:.85rem; color:#555; flex:1; }
+.config-container {
+    background:#1e1e1e; border-radius:6px; overflow:hidden;
+    font-family:'Courier New', Consolas, monospace; font-size:.82rem; line-height:1.5;
+    border:1px solid #333;
+}
+.config-file-header {
+    background:#2d2d2d; color:#ccc; padding:.4rem 1rem;
+    border-bottom:1px solid #444; font-weight:bold; font-size:.8rem;
+}
+.config-table { width:100%; border-collapse:collapse; }
+.config-table td { padding:0 .5rem; vertical-align:top; white-space:pre-wrap; word-break:break-all; color:#abb2bf; }
+.ln { width:48px; text-align:right; color:#555; border-right:1px solid #333;
+      user-select:none; padding-right:.4rem; }
+.kw  { color:#c678dd; font-weight:bold; }
+.kw2 { color:#56b6c2; }
+.num { color:#d19a66; }
+.cmt { color:#5c6370; font-style:italic; }
+{% endblock %}
+
+{% block content %}
+<section class="section">
+    <h2 id="config-title">Device Configuration</h2>
+
+    <div class="config-toolbar">
+        <button class="btn btn-secondary btn-sm" onclick="history.back()">← Back</button>
+        <button class="btn btn-secondary btn-sm" onclick="loadConfig()">Refresh</button>
+        <button class="btn btn-secondary btn-sm" onclick="downloadConfig()">Download</button>
+        <span class="config-meta" id="config-meta"></span>
+    </div>
+
+    <div id="config-container" class="config-container">
+        <div style="padding:2rem;color:#888;text-align:center;">Loading…</div>
+    </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+const params   = new URLSearchParams(window.location.search);
+const deviceId = params.get('device_id');
+let platform   = params.get('platform') || 'ios';
+let rawConfig  = '';
+
+const e = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
+const CLI_KW  = /\b(interface|router|ip|ipv6|route|access-list|permit|deny|no|shutdown|description|hostname|version|vlan|spanning-tree|crypto|pki|certificate|ntp|logging|snmp|service|line|console|vty|password|username|enable|aaa|authentication|authorization|accounting|policy-map|class-map|match|set|traffic-shape|bandwidth|switchport|access|trunk|encapsulation|dot1q|bgp|ospf|eigrp|rip|area|network|neighbor|redistribute|passive-interface|mpls|vrf|address-family|import|export|route-target|prefix-list)\b/g;
+const CLI_KW2 = /\b(in|out|any|host|eq|gt|lt|neq|range|established|log|static|dynamic|extended|standard|default|metric|distance)\b/g;
+const IP_RE   = /\b(\d{1,3}\.){3}\d{1,3}(\/\d{1,2})?\b/g;
+const CMT_RE  = /^(\s*[!#].*)$/gm;
+
+function highlightLine(line) {
+    if (platform === 'fortios') {
+        let s = e(line);
+        s = s.replace(/\b(config|edit|set|end|next|get|show)\b/g, m => `<span class="kw">${m}</span>`);
+        s = s.replace(IP_RE, m => `<span class="num">${m}</span>`);
+        return s;
+    }
+    if (platform === 'panos') {
+        return e(line)
+            .replace(/(&lt;\/?)([\w:-]+)(&gt;|[ \t])/g, (_, o, t, c) => `${o}<span class="kw">${t}</span>${c}`);
+    }
+    let s = e(line);
+    s = s.replace(CMT_RE, m => `<span class="cmt">${m}</span>`);
+    s = s.replace(CLI_KW,  m => `<span class="kw">${m}</span>`);
+    s = s.replace(CLI_KW2, m => `<span class="kw2">${m}</span>`);
+    s = s.replace(IP_RE,   m => `<span class="num">${m}</span>`);
+    return s;
+}
+
+async function loadConfig() {
+    if (!deviceId) {
+        document.getElementById('config-container').innerHTML =
+            '<div style="padding:2rem;color:#f00;">No device_id in query string.</div>';
+        return;
+    }
+
+    document.getElementById('config-container').innerHTML =
+        '<div style="padding:2rem;color:#888;text-align:center;">Loading…</div>';
+
+    try {
+        const r    = await fetch(`/api/backups/config/${deviceId}`);
+        if (!r.ok) {
+            const err = await r.json();
+            throw new Error(err.detail || r.statusText);
+        }
+        const data = await r.json();
+
+        platform  = data.platform || platform;
+        rawConfig = data.config || '';
+
+        document.getElementById('config-title').textContent =
+            `Configuration — ${data.hostname}`;
+        document.getElementById('config-meta').textContent =
+            `${rawConfig.split('\n').length} lines · ${rawConfig.length} bytes · platform: ${platform}`;
+
+        const lines  = rawConfig.split('\n');
+        let   html   = '<table class="config-table">';
+        lines.forEach((line, i) => {
+            html += `<tr>
+                <td class="ln">${i + 1}</td>
+                <td>${highlightLine(line)}</td>
+            </tr>`;
+        });
+        html += '</table>';
+
+        document.getElementById('config-container').innerHTML =
+            `<div class="config-file-header">${data.hostname}.txt</div>` + html;
+
+    } catch (err) {
+        document.getElementById('config-container').innerHTML =
+            `<div style="padding:2rem;color:#f00;">Error: ${err.message}</div>`;
+    }
+}
+
+function downloadConfig() {
+    if (!rawConfig) { alert('No config loaded.'); return; }
+    const a    = document.createElement('a');
+    a.href     = 'data:text/plain;charset=utf-8,' + encodeURIComponent(rawConfig);
+    a.download = `config-device-${deviceId}.txt`;
+    a.click();
+}
+
+document.addEventListener('DOMContentLoaded', loadConfig);
+{% endblock %}
